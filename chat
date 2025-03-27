@@ -1,0 +1,329 @@
+#!/bin/execlineb -S0
+#
+# invoked for each ssh chat@host with user publickey in env 'chatkey'
+
+unexport 0
+unexport MAIL
+unexport SHELL
+
+# this allow access via mosh
+ifelse { eltest ${2} =~ "^mosh-server " } {
+	mosh-server new -c 256 -s
+}
+
+backtick -E hostname { hostname }
+backtick -E modtime { date -r ${0} "+%y%m%d_%H:%M" }
+
+#define some file descriptors, get the publickey
+multisubstitute {
+	define version "chat v0.2.2-smj ${modtime}"
+	importas -D "" -S TERM
+	importas -D "" -S chatkey
+	importas -D "" -S SSH_CLIENT
+	define channeloutput 10
+	define channelinput 11
+	define useroutput 12
+	define userinput 13
+	define save0 7
+	define save1 8
+}
+
+ifelse -n { eltest ${TERM} } {
+	s6-echo "The 'TERM' variable must be defined"
+}
+ifelse -n { eltest ${chatkey} } {
+	s6-echo "sshd did not define the 'chatkey' environment variable"
+}
+
+execline-umask 0027
+#get our process ID
+getpid -E pid
+
+#channel I/O
+piperw ${channeloutput} ${channelinput}
+#user I/O
+piperw ${useroutput} ${userinput}
+#backup stdin/stdout for restart
+fdmove -c ${save0} 0
+fdmove -c ${save1} 1
+
+#define some colors
+backtick -E color-reset { tput sgr0 }
+backtick -E grey { tput setaf 8 }
+#hash the key (mostly just to remove /'s to allow use as a directory name)
+backtick -E key {
+	heredoc 0 ${chatkey}
+	pipeline { b2sum -l 128 }
+	sed -e "s: .*$::"
+}
+#ensure settings dir for this key exists
+foreground {
+	if -n { eltest -d .keys/${key} }
+	foreground { mkdir -p .keys/${key} }
+	redirfd -w 1 .keys/${key}/key
+	s6-echo ${chatkey}
+}
+foreground {
+	redirfd -w 1 .keys/${key}/SSH_CLIENT
+	s6-echo -n "${SSH_CLIENT}"
+}
+
+#ensure this key has a nick and color
+#we use pwgen to assign a random initial nick
+foreground {
+	loopwhilex -x 77
+	ifelse { eltest -e .keys/${key}/nick } { exit 77 }
+	backtick -E nick { pwgen -0 5 1 }
+	backtick -E nicklow { heredoc 0 ${nick} tr [A-Z] [a-z] }
+	if -n { eltest -e .nicks/${nicklow} }
+	foreground {
+		redirfd -w 1 .keys/${key}/nick
+		s6-echo ${nick}
+	}
+	foreground { ln -s /home/chat/.keys/${key} .nicks/${nicklow} }
+
+	#color defaults to white
+	if -n { eltest -e .keys/${key}/color }
+	redirfd -w 1 .keys/${key}/color
+	tput setaf 7
+}
+
+#join the 'main' channel, unless already in a channel (restart)
+foreground {
+	elglob chan .channels/*/${key}-${pid}
+	if { eltest ${chan} =~ "[*]" }
+	foreground { mkdir -p .channels/main }
+	ln -sf /proc/${pid}/fd/${channelinput} .channels/main/${key}-${pid}
+}
+
+#manage traffic to display
+#background loop. input with leading / goes to status line
+background {
+	# establish a status line
+	# upper lines scroll, status line stays
+	backtick -E lines { tput lines }
+	backtick -E status { expr ${lines} - 1 }
+	backtick -E scroll { expr ${lines} - 2 }
+	foreground { reset }
+	foreground { tput csr 0 ${scroll} }
+	foreground { tput cup ${status} }
+
+	#this background task takes input from the foreground task
+	#and from other user's foreground tasks
+	fdmove 0 ${channeloutput}
+
+	#this loops on each line of input to the display
+	forstdin -E showline
+
+	#input with leading '/' goes to 'status line'
+	ifelse { eltest ${showline} =~ ^/ } {
+		backtick -E statline { heredoc 0 ${showline} cut -b1 --complement }
+		foreground { tput cup ${status} }
+		foreground { tput el }
+		s6-echo -n ${statline}
+	}
+	# all others go to bottom of 'scroll area'
+	#save cursor pos
+	foreground { tput sc }
+	#move to scroll area
+	foreground { tput cup ${scroll} }
+	foreground { tput sgr0 }
+	#doggy: put timestamp here instead?
+	foreground { s6-echo ${showline} }
+	#restore cursor pos
+	foreground { tput rc }
+}
+
+#the rest of the script sends output to the background task
+fdmove -c 1 ${channelinput}
+
+foreground {
+	elglob chans .channels/*/${key}-${pid}
+	forx -E chan { ${chans} }
+	ifelse -n { eltest -e ${chan} } {
+		rm ${chan}
+	}
+	backtick -E channel {
+		heredoc 0 ${chan}
+		sed -e s:^.channels/\\(.*\\)/${key}-${pid}$:\\1:
+	}
+	backtick -E nick { cat .keys/${key}/nick }
+	backtick -E c { cat .keys/${key}/color }
+	s6-echo "/${channel}@${hostname} [${c}${nick}${color-reset}] "
+}
+
+#this runs in a 'foreground' block, so we can manage how we exit
+foreground {
+	#this loops on each line of input from the user, exiting on non 0 result
+	forstdin -E -o 0 in
+	backtick -E input { heredoc 0 ${in} tr -d [:cntrl:] }
+	if {
+		ifelse { eltest ${input} =~ "^[/].*" } {
+			case ${input} {
+				"^/\(help\|[?]\|h\)$" {
+					s6-echo "\n${grey}* /quit - quit\n${grey}* /nick - change nick\n${grey}* /color(s) - change nick color\n${grey}* /join - change channel\n${grey}* /who - others in the channel${color-reset}\n${grey}* /clear\n${grey}* /version"
+				}
+				# restart the 'chat' script, (loading the new one if it was updated)
+				# also clear screen and resets to new window size
+				"^/\(clear\|reset\|restart\|init\|c\)$" { exit 7 }
+				"^/\(version\|ver\|v\)$" { s6-echo "\n${grey}* this is ${version}${color-reset}" }
+				"^/\(quit\|exit\|q\)$" { exit 1	}
+				"^/\(nick .*\|nick\)" {
+					#sanitize the proposed new nick
+					backtick -E nick {
+						ifelse { eltest ${input} = "/nick ?" } { pwgen -0 5 1 }
+						heredoc 0 ${input}
+						pipeline { sed -e "s:^/nick::" }
+						tr -d -c "a-zA-Z0-9_-"
+					}
+					if -t { eltest ${nick} }
+					backtick -E nicklow { heredoc 0 ${nick}	tr [A-Z] [a-z] }
+					#who owns the new nick?
+					backtick -E nikey { realpath .nicks/${nicklow} }
+					if -t {
+						#not already ours?
+						if -n -t { eltest ${nikey} = /home/chat/.keys/${key} }
+						#already taken? 
+						ifelse { eltest -e .nicks/${nicklow} } {
+							foreground { s6-echo "${grey}* /nick: '${nick}' is in use${color-reset}" }
+							exit 1
+						}
+						#not in use, take it.
+						ln -s /home/chat/.keys/${key} .nicks/${nicklow}
+					}
+
+					#ours now, use it
+					backtick -E oldnick { cat .keys/${key}/nick }
+					#use the new nick
+					foreground {
+						redirfd -w 1 .keys/${key}/nick
+						s6-echo "${nick}"
+					}
+					#free the old nick, or keep ownership of it.
+					backtick -E oldlow { heredoc 0 ${oldnick} tr [A-Z] [a-z] }
+					if -n -t { eltest -e .keys/${key}/keepnicks/${oldlow} }
+					if -t { eltest -e .nicks/${oldlow} }
+					rm .nicks/${oldlow}
+				}
+				"^/join.*" {
+					# if a new channel is specified
+					if -t { eltest ${input} =~ "^/join " }
+					backtick -E newchan {
+						heredoc 0 ${input}
+						pipeline { sed -e "s:^/join ::" }
+						pipeline { tr [A-Z] [a-z] }
+						tr -d -c "a-z0-9_-"
+					}
+					if -t { eltest ${newchan} }
+					# ensure it exists
+					foreground { mkdir -p .channels/${newchan} }
+					# remove us from other channels
+					foreground {
+						elglob oldchans .channels/*/${key}-${pid}
+						forx -E old { ${oldchans} }
+						rm ${old}
+					}
+					# add us to the new channel
+					ln -sf /proc/${pid}/fd/${channelinput} .channels/${newchan}/${key}-${pid}
+				}
+				"^/\(who\|w\)$" {
+					elglob chan .channels/*/${key}-${pid}
+					backtick -E channel {
+						heredoc 0 ${chan}
+						sed -e s:^.channels/\\(.*\\)/${key}-${pid}$:\\1:
+					}
+					elglob keys .channels/${channel}/*-*
+					foreground { s6-echo "\n" }
+					forx -E wkey { ${keys} }
+					backtick -E wk {
+						heredoc 0 ${wkey}
+						sed -e s:^.channels/${channel}/\\([^-]*\\)-.*$:\\1:
+					}
+					backtick -E w { cat .keys/${wk}/nick }
+					s6-echo "${grey}* ${w}${color-reset}"
+				}
+				"^/colors$" {
+					foreground {
+						pipeline { seq 0 255 }
+						forstdin -E num
+						foreground { tput setaf ${num} }
+						s6-echo -n " ${num} "
+					}
+					s6-echo "${color-reset}"
+				}
+				"^/color [0-9]*$" {
+					backtick -E color {
+						heredoc 0 ${input}
+						pipeline { sed -e "s:^/color ::" }
+						tr -d -c "0-9"
+					}
+					if -t { eltest ${color} }
+					ifelse { eltest ${color} -gt 255 } {
+						s6-echo "${grey}* color out of range${color-reset}"
+					}
+					redirfd -w 1 .keys/${key}/color
+					tput setaf ${color}
+				}
+			} #close of case for parsing '/' commands
+			s6-echo "${grey}* unknown command: '${input}'${color-reset}"
+		} #close of ifelse test for '/' input
+		
+		if -t { eltest $input }
+		
+		backtick -E nick { cat .keys/${key}/nick }
+		backtick -E color { cat .keys/${key}/color }
+		#backtick -E time { date "+%y%m%d_%H:%M" }
+		backtick -E time { date "+%H:%M" }
+		
+		elglob chn .channels/*/${key}-${pid}
+		forx -E chan { ${chn} }
+		# remove dead channel links to self
+		ifelse -n { eltest -e ${chan} } {
+			rm ${chan}
+		}
+		backtick -E channel {
+			heredoc 0 ${chan}
+			sed -e s:/${key}-${pid}$::
+		}
+		elglob keys ${channel}/*
+		forx -E tokey { ${keys} }
+		# remove dead channel links
+		ifelse -n { eltest -e ${tokey} } {
+			rm ${tokey}
+		}
+		#don't echo to self
+		#	if -n -t { eltest ${tokey} =~ /${key}$ }
+		foreground {
+			redirfd -a 1 ${tokey}
+			s6-echo "${grey}${time} ${color}${nick}${color-reset}: ${input}"
+		}
+	} # close of 'if' around the 'ifelse' test for '/' user input, now refresh the command prompt (if not terminating)
+	elglob chans .channels/*/${key}-${pid}
+	forx -E chan { ${chans} }
+	ifelse -n { eltest -e ${chan} } {
+		rm ${chan}
+	}
+	backtick -E channel {
+		heredoc 0 ${chan}
+		sed -e s:^.channels/\\(.*\\)/${key}-${pid}$:\\1:
+	}
+	backtick -E nick { cat .keys/${key}/nick }
+	backtick -E c { cat .keys/${key}/color }
+	s6-echo "/${channel}@${hostname} [${c}${nick}${color-reset}] "
+} # close of 'background' around the 'forstdin' parsing user input, we are terminating.
+importas ? ?
+fdclose ${channeloutput}
+fdclose ${channelinput}
+fdclose ${useroutput}
+fdclose ${userinput}
+fdmove 0 ${save0}
+fdmove 1 ${save1}
+foreground { reset }
+# if an error code '7' was returned, exec into the script anew
+ifelse { eltest ${?} -eq 7 } {
+	${0}
+}
+# remove us from other channels
+elglob exitchans .channels/*/${key}-${pid}
+forx -E leave { ${exitchans} }
+rm ${leave}
