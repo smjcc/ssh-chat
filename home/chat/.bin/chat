@@ -16,7 +16,7 @@ backtick -E modtime { date -r ${0} "+%y%m%d_%H:%M" }
 
 #define some file descriptors, get the publickey
 multisubstitute {
-	define version "chat v0.2.2-smj ${modtime}"
+	define version "chat v0.2.3-smj ${modtime}"
 	importas -D "" -S TERM
 	importas -D "" -S chatkey
 	importas -D "" -S SSH_CLIENT
@@ -66,6 +66,10 @@ foreground {
 foreground {
 	redirfd -w 1 .keys/${key}/SSH_CLIENT
 	s6-echo -n "${SSH_CLIENT}"
+}
+foreground {
+	if -n { eltest -d .nicks }
+	mkdir -p .nicks
 }
 
 #ensure this key has a nick and color
