@@ -16,7 +16,7 @@ backtick -E modtime { date -r ${0} "+%y%m%d_%H:%M" }
 
 #define some file descriptors, get the publickey
 multisubstitute {
-	define version "chat v0.2.3-smj ${modtime}"
+	define version "chat v0.2.5-smj ${modtime}"
 	importas -D "" -S TERM
 	importas -D "" -S chatkey
 	importas -D "" -S SSH_CLIENT
@@ -165,19 +165,23 @@ foreground {
 		ifelse { eltest ${input} =~ "^[/].*" } {
 			case ${input} {
 				"^/\(help\|[?]\|h\)$" {
-					s6-echo "\n${grey}* /quit - quit\n${grey}* /nick - change nick\n${grey}* /color(s) - change nick color\n${grey}* /join - change channel\n${grey}* /who - others in the channel${color-reset}\n${grey}* /clear\n${grey}* /version"
+					s6-echo "\n${grey}* /quit - quit\n${grey}* /nick - change nick\n${grey}* /color(s) - change nick color\n${grey}* /join - change channel\n${grey}* /who - others in the channel${color-reset}\n${grey}* /status - set your status string\n${grey}* /clear\n${grey}* /version"
 				}
 				# restart the 'chat' script, (loading the new one if it was updated)
 				# also clear screen and resets to new window size
 				"^/\(clear\|reset\|restart\|init\|c\)$" { exit 7 }
+				# report the current version
 				"^/\(version\|ver\|v\)$" { s6-echo "\n${grey}* this is ${version}${color-reset}" }
+				# close the connection
 				"^/\(quit\|exit\|q\)$" { exit 1	}
-				"^/\(nick .*\|nick\)" {
-					#sanitize the proposed new nick
+				# change your 'nick'
+				"^/\(nick .*\|n .*\)" {
+					#sanitize the proposed new nick: letters, numbers, and "_-" allowed
 					backtick -E nick {
-						ifelse { eltest ${input} = "/nick ?" } { pwgen -0 5 1 }
+						#set to a random nick?
+						ifelse { eltest ${input} = "/nick ?" -o ${input} = "/n ?" } { pwgen -0 5 1 }
 						heredoc 0 ${input}
-						pipeline { sed -e "s:^/nick::" }
+						pipeline { sed -e "s:^/n[^ ]* ::" }
 						tr -d -c "a-zA-Z0-9_-"
 					}
 					if -t { eltest ${nick} }
@@ -209,12 +213,12 @@ foreground {
 					if -t { eltest -e .nicks/${oldlow} }
 					rm .nicks/${oldlow}
 				}
-				"^/join.*" {
+				# join a new chat "room" or "channel": channel names are only lower case letters, numbers, and "_-"
+				"^/\(join\|j\) .*" {
 					# if a new channel is specified
-					if -t { eltest ${input} =~ "^/join " }
 					backtick -E newchan {
 						heredoc 0 ${input}
-						pipeline { sed -e "s:^/join ::" }
+						pipeline { sed -e "s:^/j[^ ]* ::" }
 						pipeline { tr [A-Z] [a-z] }
 						tr -d -c "a-z0-9_-"
 					}
@@ -230,6 +234,7 @@ foreground {
 					# add us to the new channel
 					ln -sf /proc/${pid}/fd/${channelinput} .channels/${newchan}/${key}-${pid}
 				}
+				# who else is in this channel/room ?
 				"^/\(who\|w\)$" {
 					elglob chan .channels/*/${key}-${pid}
 					backtick -E channel {
@@ -244,8 +249,41 @@ foreground {
 						sed -e s:^.channels/${channel}/\\([^-]*\\)-.*$:\\1:
 					}
 					backtick -E w { cat .keys/${wk}/nick }
-					s6-echo "${grey}* ${w}${color-reset}"
+					backtick -E s {
+						if -t { eltest -e .keys/${wk}/status }
+						foreground { s6-echo -n ": " }
+						cat .keys/${wk}/status
+					}
+					s6-echo "${grey}* ${w}${s}${color-reset}"
 				}
+				# who has set a status, logged in or not.
+				"^/W.*" {
+					elglob keys .keys/*
+					foreground { s6-echo "\n" }
+					forx -E k { ${keys} }
+					if -t { eltest -e ${k}/status }
+					backtick -E n { cat ${k}/nick }
+					backtick -E s { cat ${k}/status }
+					s6-echo "${grey}* ${n}: ${s}${color-reset}"
+				}
+				# set status
+				"^/s.*" {
+					backtick -D "" -E s {
+						heredoc 0 ${input}
+						sed -e "s:^/s::" -e "s:^ *::"
+					}
+					backtick -D "" -E os {
+						if -t { eltest -e .keys/${key}/status }
+						cat .keys/${key}/status
+					}
+					ifelse { eltest ${s} } {
+						foreground { redirfd -w 1 .keys/${key}/status s6-echo "${s}" }
+						s6-echo "${grey}* changed your status from \"${os}\" to \"${s}\""
+					}
+					foreground { rm .keys/${key}/status }
+					s6-echo "${grey}* removed your status `${os}`"
+				}
+				# show what numbers map to what colors
 				"^/colors$" {
 					foreground {
 						pipeline { seq 0 255 }
@@ -255,6 +293,7 @@ foreground {
 					}
 					s6-echo "${color-reset}"
 				}
+				# set the color of your nick
 				"^/color [0-9]*$" {
 					backtick -E color {
 						heredoc 0 ${input}
@@ -269,19 +308,20 @@ foreground {
 					tput setaf ${color}
 				}
 			} #close of case for parsing '/' commands
-			s6-echo "${grey}* unknown command: '${input}'${color-reset}"
+			s6-echo "${grey}* command not understood: '${input}'${color-reset}"
 		} #close of ifelse test for '/' input
 		
 		if -t { eltest $input }
 		
 		backtick -E nick { cat .keys/${key}/nick }
 		backtick -E color { cat .keys/${key}/color }
+		# should time be user selectable? right now we only control what we send, not what we receive
 		#backtick -E time { date "+%y%m%d_%H:%M" }
 		backtick -E time { date "+%H:%M" }
 		
 		elglob chn .channels/*/${key}-${pid}
 		forx -E chan { ${chn} }
-		# remove dead channel links to self
+		# remove dead channel links to self (likely not needed, remove?)
 		ifelse -n { eltest -e ${chan} } {
 			rm ${chan}
 		}
@@ -291,11 +331,11 @@ foreground {
 		}
 		elglob keys ${channel}/*
 		forx -E tokey { ${keys} }
-		# remove dead channel links
+		# remove dead channel links (lost connections, killed processes)
 		ifelse -n { eltest -e ${tokey} } {
 			rm ${tokey}
 		}
-		#don't echo to self
+		#don't echo to self, naw... echo to self.
 		#	if -n -t { eltest ${tokey} =~ /${key}$ }
 		foreground {
 			redirfd -a 1 ${tokey}
