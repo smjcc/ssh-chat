@@ -261,10 +261,14 @@ foreground {
 					elglob keys .keys/*
 					foreground { s6-echo "\n" }
 					forx -E k { ${keys} }
-					if -t { eltest -e ${k}/status }
+					if -t { eltest ${input} =~ "[!]" -o -e ${k}/status }
 					backtick -E n { cat ${k}/nick }
-					backtick -E s { cat ${k}/status }
-					s6-echo "${grey}* ${n}: ${s}${color-reset}"
+					backtick -D "" -E s {
+						if -t { eltest -e ${k}/status }
+						foreground { s6-echo -n ": " }
+						cat ${k}/status
+					}
+					s6-echo "${grey}* ${n}${s}${color-reset}"
 				}
 				# set status
 				"^/s.*" {

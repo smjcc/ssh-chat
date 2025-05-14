@@ -4,7 +4,11 @@ A very simple daemonless chat via ssh (or [mosh][11]) that works through your ex
 
 Users all log into your existing sshd as user 'chat', using their ed25519 public key. Their 'nick' and other settings are associated with that key and preserved.
 
-When accessed via the [mosh][11] client, this is a effectively a UDP chat.
+When accessed via the [mosh][11] client, this is effectively a UDP chat.
+
+## Note
+
+I am actively soliciting feature requests.
 
 ## History
 
