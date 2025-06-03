@@ -12,7 +12,7 @@ unexport 0
 unexport MAIL
 unexport SHELL
 
-# this allow access via mosh
+# this allows access via mosh
 ifelse { eltest ${2} =~ "^mosh-server " } {
 	mosh-server new -c 256 -s
 }

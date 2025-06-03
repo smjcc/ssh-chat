@@ -12,7 +12,7 @@ I am actively soliciting feature requests.
 
 ## History
 
-I was inspired by the post "[Why aren’t we using SSH for everything?][10]", and thereby discovered the 'real' [ssh-chat][1], but could not get it to compile and run under [musl][2]. [Shazow's][3] ssh-chat is arguably superior on many counts, including that it runs as a dameon, and therefore can do things this ssh-chat cannot, even when no users are online, and that it is compiled and therefore runs with much more potential efficiency and scalability. (execline makes extensive 'execv' calls)
+I was inspired by the post "[Why aren’t we using SSH for everything?][10]", and thereby discovered the 'real' [ssh-chat][1], but could not get it to compile and run under [musl][2]. [Shazow's][3] ssh-chat is arguably superior on many counts, including that it runs as a daemon, and therefore can do things this ssh-chat cannot, even when no users are online, and that it is compiled and therefore runs with much more potential efficiency and scalability. (execline makes extensive 'execv' calls)
 
 ## Differences from [Shazow's][3] [ssh-chat][1]
 
