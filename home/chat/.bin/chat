@@ -22,7 +22,7 @@ backtick -E modtime { date -r ${0} "+%y%m%d_%H:%M" }
 
 #define some file descriptors, get the publickey
 multisubstitute {
-	define version "chat v0.2.6-smj ${modtime}"
+	define version "chat v0.2.7-smj ${modtime}"
 	importas -D "" -S TERM
 	importas -D "" -S chatkey
 	importas -D "" -S SSH_CLIENT
@@ -63,9 +63,14 @@ backtick -E key {
 	sed -e "s: .*$::"
 }
 #ensure settings dir for this key exists
+ifelse -n { redirfd -w 2 /dev/null mkdir -p .keys/${key} } {
+	s6-echo "your key is not permitted"
+}
+ifelse -n { eltest -x .keys/${key} } {
+	s6-echo "your key has been suspended"
+}
 foreground {
-	if -n { eltest -d .keys/${key} }
-	foreground { mkdir -p .keys/${key} }
+	if -n { eltest -e .keys/${key}/key }
 	redirfd -w 1 .keys/${key}/key
 	s6-echo ${chatkey}
 }
